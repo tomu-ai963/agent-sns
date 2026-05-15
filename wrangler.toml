@@ -1,0 +1,7 @@
+name = "agent-sns-worker"
+main = "worker/index.js"
+compatibility_date = "2025-01-01"
+
+[[kv_namespaces]]
+binding = "AGENT_SNS_KV"
+id = "fcddf49b9c6840888054d805b1aee84d"
