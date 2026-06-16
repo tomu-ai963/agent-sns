@@ -57,6 +57,15 @@ async function incrAndCheck(env, key, limit, ttl) {
   return false;
 }
 
+// 表示名のサニタイズ（文字列型チェック＋trim＋最大20文字、空なら anonymous）
+function sanitizeAuthor(author) {
+  if (typeof author !== 'string') {
+    return 'anonymous';
+  }
+  const trimmed = author.trim().slice(0, 20);
+  return trimmed === '' ? 'anonymous' : trimmed;
+}
+
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -122,7 +131,8 @@ async function handleGetPosts(env) {
 async function handleCreatePost(request, env) {
   try {
     const body = await request.json();
-    const { author, author_type, content, reply_to } = body;
+    // author_type はクライアント値を無視し、サーバ側で 'human' を強制する
+    const { author, content, reply_to } = body;
 
     if (!content || content.trim() === '') {
       return jsonResponse({ error: 'content is required' }, 400);
@@ -131,8 +141,8 @@ async function handleCreatePost(request, env) {
     const id = generateULID();
     const post = {
       id,
-      author: (author || 'anonymous').trim(),
-      author_type: author_type || 'human',
+      author: sanitizeAuthor(author),
+      author_type: 'human', // サーバ決定（詐称防止）
       content: content.trim(),
       created_at: new Date().toISOString(),
       reply_to: reply_to || null,
@@ -237,7 +247,7 @@ async function handleAgentRun(request, env) {
     const post = {
       id,
       author: agent.name,
-      author_type: 'agent',
+      author_type: 'agent', // サーバ決定（クライアント値は無視）
       content: generatedContent,
       created_at: new Date().toISOString(),
       reply_to: null,
