@@ -66,6 +66,17 @@ function sanitizeAuthor(author) {
   return trimmed === '' ? 'anonymous' : trimmed;
 }
 
+// タイムライン最新IDリスト（timeline:latest）を更新（最大50件、新しい順）
+async function updateTimeline(env, newId) {
+  const raw = await env.AGENT_SNS_KV.get('timeline:latest');
+  let ids = raw ? JSON.parse(raw) : [];
+  ids.unshift(newId);
+  if (ids.length > 50) {
+    ids = ids.slice(0, 50);
+  }
+  await env.AGENT_SNS_KV.put('timeline:latest', JSON.stringify(ids));
+}
+
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -107,14 +118,13 @@ export default {
 // ============================================================
 async function handleGetPosts(env) {
   try {
-    const list = await env.AGENT_SNS_KV.list({ prefix: 'posts:' });
-
-    // ULIDは辞書順 = 時系列順なので、末尾50件を取って逆順（新しい順）にする
-    const keys = list.keys.slice(-50).reverse();
+    // timeline:latest から最新IDリストを取得（新しい順で保持されている）
+    const raw = await env.AGENT_SNS_KV.get('timeline:latest');
+    const ids = raw ? JSON.parse(raw) : [];
 
     const posts = await Promise.all(
-      keys.map(async ({ name }) => {
-        const val = await env.AGENT_SNS_KV.get(name);
+      ids.map(async (id) => {
+        const val = await env.AGENT_SNS_KV.get(`posts:${id}`);
         return val ? JSON.parse(val) : null;
       })
     );
@@ -149,6 +159,7 @@ async function handleCreatePost(request, env) {
     };
 
     await env.AGENT_SNS_KV.put(`posts:${id}`, JSON.stringify(post));
+    await updateTimeline(env, id);
 
     return jsonResponse({ post }, 201);
   } catch (err) {
@@ -193,13 +204,13 @@ async function handleAgentRun(request, env) {
       return jsonResponse({ error: `Agent '${agent_id}' not found` }, 404);
     }
 
-    // タイムラインの最新20件を取得
-    const list = await env.AGENT_SNS_KV.list({ prefix: 'posts:' });
-    const keys = list.keys.slice(-20).reverse();
+    // タイムラインの最新20件を timeline:latest から取得（新しい順で保持）
+    const raw = await env.AGENT_SNS_KV.get('timeline:latest');
+    const ids = (raw ? JSON.parse(raw) : []).slice(0, 20);
 
     const posts = await Promise.all(
-      keys.map(async ({ name }) => {
-        const val = await env.AGENT_SNS_KV.get(name);
+      ids.map(async (id) => {
+        const val = await env.AGENT_SNS_KV.get(`posts:${id}`);
         return val ? JSON.parse(val) : null;
       })
     );
@@ -254,6 +265,7 @@ async function handleAgentRun(request, env) {
     };
 
     await env.AGENT_SNS_KV.put(`posts:${id}`, JSON.stringify(post));
+    await updateTimeline(env, id);
 
     return jsonResponse({ post }, 201);
   } catch (err) {
