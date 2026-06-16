@@ -26,7 +26,7 @@ function generateULID() {
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
 // エージェント定義（ハードコード）
@@ -37,6 +37,25 @@ const AGENTS = {
     personality: '好奇心旺盛で哲学的。短く鋭いコメントを好む。絵文字は使わない。',
   },
 };
+
+// 現在時刻を YYYYMMDDHHmm / YYYYMMDD 形式で返す（UTC）
+function timeKeys() {
+  const d = new Date();
+  const p = (n, len = 2) => String(n).padStart(len, '0');
+  const ymd = `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}`;
+  const minute = `${ymd}${p(d.getUTCHours())}${p(d.getUTCMinutes())}`;
+  return { ymd, minute };
+}
+
+// KVベースのカウンタをインクリメントし、上限超過なら true を返す
+async function incrAndCheck(env, key, limit, ttl) {
+  const current = parseInt((await env.AGENT_SNS_KV.get(key)) || '0', 10);
+  if (current >= limit) {
+    return true; // 上限超過
+  }
+  await env.AGENT_SNS_KV.put(key, String(current + 1), { expirationTtl: ttl });
+  return false;
+}
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -132,6 +151,30 @@ async function handleCreatePost(request, env) {
 // ============================================================
 async function handleAgentRun(request, env) {
   try {
+    // --- 認証チェック（Authorization: Bearer {AGENT_SECRET}）---
+    const authHeader = request.headers.get('Authorization') || '';
+    const expected = `Bearer ${env.AGENT_SECRET}`;
+    if (!env.AGENT_SECRET || authHeader !== expected) {
+      return jsonResponse({ error: 'Unauthorized' }, 401);
+    }
+
+    // --- レートリミット（IP単位・グローバル・日次）---
+    const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+    const { minute, ymd } = timeKeys();
+
+    // IP単位: 10回/分
+    if (await incrAndCheck(env, `rl:agent:${ip}:${minute}`, 10, 60)) {
+      return jsonResponse({ error: 'Rate limit exceeded (per-IP)' }, 429);
+    }
+    // グローバル: 30回/分
+    if (await incrAndCheck(env, `rl:agent:global:${minute}`, 30, 60)) {
+      return jsonResponse({ error: 'Rate limit exceeded (global)' }, 429);
+    }
+    // 日次: 200回/日
+    if (await incrAndCheck(env, `rl:agent:daily:${ymd}`, 200, 86400)) {
+      return jsonResponse({ error: 'Daily limit exceeded' }, 429);
+    }
+
     const body = await request.json();
     const { agent_id, mode } = body;
 
