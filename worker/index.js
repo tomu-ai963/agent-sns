@@ -144,18 +144,26 @@ async function handleCreatePost(request, env) {
     // author_type はクライアント値を無視し、サーバ側で 'human' を強制する
     const { author, content, reply_to } = body;
 
-    if (!content || content.trim() === '') {
-      return jsonResponse({ error: 'content is required' }, 400);
+    // content: 文字列型チェック → trim後1〜500文字
+    if (typeof content !== 'string') {
+      return jsonResponse({ error: 'content must be a string' }, 400);
     }
+    const trimmedContent = content.trim();
+    if (trimmedContent.length < 1 || trimmedContent.length > 500) {
+      return jsonResponse({ error: 'content must be 1-500 characters' }, 400);
+    }
+
+    // reply_to: 文字列または null のみ許可。それ以外は null に強制
+    const safeReplyTo = typeof reply_to === 'string' ? reply_to : null;
 
     const id = generateULID();
     const post = {
       id,
       author: sanitizeAuthor(author),
       author_type: 'human', // サーバ決定（詐称防止）
-      content: content.trim(),
+      content: trimmedContent,
       created_at: new Date().toISOString(),
-      reply_to: reply_to || null,
+      reply_to: safeReplyTo,
     };
 
     await env.AGENT_SNS_KV.put(`posts:${id}`, JSON.stringify(post));
@@ -247,7 +255,9 @@ async function handleAgentRun(request, env) {
 
     if (!aiRes.ok) {
       const errText = await aiRes.text();
-      throw new Error(`Anthropic API error: ${aiRes.status} ${errText}`);
+      // 詳細はサーバログにのみ出力（クライアントには漏らさない）
+      console.error(`Anthropic API error: ${aiRes.status} ${errText}`);
+      throw new Error('Anthropic API request failed');
     }
 
     const aiData = await aiRes.json();
@@ -269,6 +279,8 @@ async function handleAgentRun(request, env) {
 
     return jsonResponse({ post }, 201);
   } catch (err) {
-    return jsonResponse({ error: err.message || 'Failed to run agent' }, 500);
+    // 詳細はサーバログにのみ出力し、クライアントには汎用文言のみ返す
+    console.error('handleAgentRun failed:', err);
+    return jsonResponse({ error: 'Agent execution failed' }, 500);
   }
 }
