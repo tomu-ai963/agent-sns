@@ -22,12 +22,31 @@ function generateULID() {
   return timeStr + randStr;
 }
 
-// CORSヘッダー（全オリジン許可）
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-};
+// 許可するOrigin（本番のGitHub Pages + ローカル開発）
+const ALLOWED_ORIGINS = [
+  'https://tomu-ai963.github.io',
+  'http://localhost:8080', // 開発用
+];
+
+// リクエストの Origin が許可リストに含まれればそれを返す。含まれなければ null（＝ブロック）
+function getCorsOrigin(requestOrigin) {
+  return ALLOWED_ORIGINS.includes(requestOrigin) ? requestOrigin : null;
+}
+
+// リクエストに応じたCORSヘッダーを生成。
+// 許可Originのときのみ Access-Control-Allow-Origin を付与し、非許可Originにはヘッダを返さない。
+function corsHeaders(request) {
+  const headers = {
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    Vary: 'Origin',
+  };
+  const allowed = getCorsOrigin(request.headers.get('Origin'));
+  if (allowed) {
+    headers['Access-Control-Allow-Origin'] = allowed;
+  }
+  return headers;
+}
 
 // エージェント定義（ハードコード）
 const AGENTS = {
@@ -85,10 +104,10 @@ function escapeXml(str) {
     .replace(/>/g, '&gt;');
 }
 
-function jsonResponse(data, status = 200) {
+function jsonResponse(data, status = 200, cors = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { ...CORS, 'Content-Type': 'application/json' },
+    headers: { ...cors, 'Content-Type': 'application/json' },
   });
 }
 
@@ -99,34 +118,37 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const method = request.method;
+    const cors = corsHeaders(request);
 
     // プリフライトリクエスト対応
     if (method === 'OPTIONS') {
-      return new Response(null, { headers: CORS });
+      return new Response(null, { headers: cors });
     }
 
     if (url.pathname === '/posts' && method === 'GET') {
-      return handleGetPosts(env);
+      return handleGetPosts(env, cors);
     }
 
     if (url.pathname === '/posts' && method === 'POST') {
-      return handleCreatePost(request, env);
+      return handleCreatePost(request, env, cors);
     }
 
     if (url.pathname === '/agent/run' && method === 'POST') {
-      return handleAgentRun(request, env);
+      return handleAgentRun(request, env, cors);
     }
 
-    return new Response('Not Found', { status: 404, headers: CORS });
+    return new Response('Not Found', { status: 404, headers: cors });
   },
 };
 
 // ============================================================
 // GET /posts - タイムライン取得（最新50件）
 // ============================================================
-async function handleGetPosts(env) {
+async function handleGetPosts(env, cors) {
   try {
     // timeline:latest から最新IDリストを取得（新しい順で保持されている）
+    // 将来的には list({ prefix: 'posts:' }) + metadata で各投稿の個別 get を不要にできる
+    // （author / author_type / created_at は保存時に metadata へ付与済み）。
     const raw = await env.AGENT_SNS_KV.get('timeline:latest');
     const ids = raw ? JSON.parse(raw) : [];
 
@@ -137,16 +159,16 @@ async function handleGetPosts(env) {
       })
     );
 
-    return jsonResponse({ posts: posts.filter(Boolean) });
+    return jsonResponse({ posts: posts.filter(Boolean) }, 200, cors);
   } catch (err) {
-    return jsonResponse({ error: 'Failed to fetch posts' }, 500);
+    return jsonResponse({ error: 'Failed to fetch posts' }, 500, cors);
   }
 }
 
 // ============================================================
 // POST /posts - 新規投稿
 // ============================================================
-async function handleCreatePost(request, env) {
+async function handleCreatePost(request, env, cors) {
   try {
     const body = await request.json();
     // author_type はクライアント値を無視し、サーバ側で 'human' を強制する
@@ -154,11 +176,11 @@ async function handleCreatePost(request, env) {
 
     // content: 文字列型チェック → trim後1〜500文字
     if (typeof content !== 'string') {
-      return jsonResponse({ error: 'content must be a string' }, 400);
+      return jsonResponse({ error: 'content must be a string' }, 400, cors);
     }
     const trimmedContent = content.trim();
     if (trimmedContent.length < 1 || trimmedContent.length > 500) {
-      return jsonResponse({ error: 'content must be 1-500 characters' }, 400);
+      return jsonResponse({ error: 'content must be 1-500 characters' }, 400, cors);
     }
 
     // reply_to: 文字列または null のみ許可。それ以外は null に強制
@@ -174,25 +196,34 @@ async function handleCreatePost(request, env) {
       reply_to: safeReplyTo,
     };
 
-    await env.AGENT_SNS_KV.put(`posts:${id}`, JSON.stringify(post));
+    // content は metadata サイズ制限(1KB)があるため value のまま保存し、
+    // 一覧表示で必要な軽量フィールドのみ metadata に付与する。
+    // 将来的には list + metadata で個別 get を不要にできる（F-9 準備）。
+    await env.AGENT_SNS_KV.put(`posts:${id}`, JSON.stringify(post), {
+      metadata: {
+        author: post.author,
+        author_type: post.author_type,
+        created_at: post.created_at,
+      },
+    });
     await updateTimeline(env, id);
 
-    return jsonResponse({ post }, 201);
+    return jsonResponse({ post }, 201, cors);
   } catch (err) {
-    return jsonResponse({ error: 'Failed to create post' }, 500);
+    return jsonResponse({ error: 'Failed to create post' }, 500, cors);
   }
 }
 
 // ============================================================
 // POST /agent/run - AIエージェント実行
 // ============================================================
-async function handleAgentRun(request, env) {
+async function handleAgentRun(request, env, cors) {
   try {
     // --- 認証チェック（Authorization: Bearer {AGENT_SECRET}）---
     const authHeader = request.headers.get('Authorization') || '';
     const expected = `Bearer ${env.AGENT_SECRET}`;
     if (!env.AGENT_SECRET || authHeader !== expected) {
-      return jsonResponse({ error: 'Unauthorized' }, 401);
+      return jsonResponse({ error: 'Unauthorized' }, 401, cors);
     }
 
     // --- レートリミット（IP単位・グローバル・日次）---
@@ -201,15 +232,15 @@ async function handleAgentRun(request, env) {
 
     // IP単位: 10回/分
     if (await incrAndCheck(env, `rl:agent:${ip}:${minute}`, 10, 60)) {
-      return jsonResponse({ error: 'Rate limit exceeded (per-IP)' }, 429);
+      return jsonResponse({ error: 'Rate limit exceeded (per-IP)' }, 429, cors);
     }
     // グローバル: 30回/分
     if (await incrAndCheck(env, `rl:agent:global:${minute}`, 30, 60)) {
-      return jsonResponse({ error: 'Rate limit exceeded (global)' }, 429);
+      return jsonResponse({ error: 'Rate limit exceeded (global)' }, 429, cors);
     }
     // 日次: 200回/日
     if (await incrAndCheck(env, `rl:agent:daily:${ymd}`, 200, 86400)) {
-      return jsonResponse({ error: 'Daily limit exceeded' }, 429);
+      return jsonResponse({ error: 'Daily limit exceeded' }, 429, cors);
     }
 
     const body = await request.json();
@@ -217,7 +248,7 @@ async function handleAgentRun(request, env) {
 
     const agent = AGENTS[agent_id];
     if (!agent) {
-      return jsonResponse({ error: `Agent '${agent_id}' not found` }, 404);
+      return jsonResponse({ error: `Agent '${agent_id}' not found` }, 404, cors);
     }
 
     // タイムラインの最新20件を timeline:latest から取得（新しい順で保持）
@@ -290,13 +321,21 @@ async function handleAgentRun(request, env) {
       reply_to: null,
     };
 
-    await env.AGENT_SNS_KV.put(`posts:${id}`, JSON.stringify(post));
+    // 一覧表示用の軽量フィールドのみ metadata に付与（content は value のまま）。
+    // 将来的には list + metadata で個別 get を不要にできる（F-9 準備）。
+    await env.AGENT_SNS_KV.put(`posts:${id}`, JSON.stringify(post), {
+      metadata: {
+        author: post.author,
+        author_type: post.author_type,
+        created_at: post.created_at,
+      },
+    });
     await updateTimeline(env, id);
 
-    return jsonResponse({ post }, 201);
+    return jsonResponse({ post }, 201, cors);
   } catch (err) {
     // 詳細はサーバログにのみ出力し、クライアントには汎用文言のみ返す
     console.error('handleAgentRun failed:', err);
-    return jsonResponse({ error: 'Agent execution failed' }, 500);
+    return jsonResponse({ error: 'Agent execution failed' }, 500, cors);
   }
 }
