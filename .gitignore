@@ -3,3 +3,5 @@
 .env
 node_modules/
 .claude/settings.local.json
+.dev.vars*
+*.bak

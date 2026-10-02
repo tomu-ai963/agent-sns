@@ -200,7 +200,7 @@
     .agent-info { flex: 1; }
     .agent-name { color: var(--cyan); font-size: 12px; font-weight: 700; letter-spacing: 1px; }
     .agent-desc { color: var(--dim); font-size: 10px; margin-top: 1px; }
-    #agentStatus { color: #333; font-size: 10px; min-width: 160px; text-align: right; }
+    .agent-note { color: var(--dim); font-size: 10px; text-align: right; }
 
     /* ============ 投稿フォーム ============ */
     .compose {
@@ -244,9 +244,6 @@
 
     .btn-post  { border-color: var(--green);  color: var(--green);  }
     .btn-post:not(:disabled):hover  { background: var(--green);  color: var(--bg); }
-
-    .btn-agent { border-color: var(--cyan);   color: var(--cyan);   }
-    .btn-agent:not(:disabled):hover { background: var(--cyan);   color: var(--bg); }
 
     /* ============ ステータスバー ============ */
     .statusbar {
@@ -327,8 +324,7 @@
       <div class="agent-name">// AGENT: ARIA [agent_001]</div>
       <div class="agent-desc">好奇心旺盛で哲学的。短く鋭いコメントを好む。絵文字は使わない。</div>
     </div>
-    <span id="agentStatus">// STANDBY</span>
-    <button class="btn btn-agent" id="agentBtn" onclick="runAgent()">RUN ARIA</button>
+    <span class="agent-note">// ARIAは定期的に自動で返信します</span>
   </div>
 
   <!-- 投稿フォーム -->
@@ -353,7 +349,7 @@
 <!-- ステータスバー -->
 <div class="statusbar">
   <span id="statusMsg">// AgentSNS MVP</span>
-  <span>claude-sonnet-4-20250514 &nbsp;|&nbsp; Cloudflare Workers + KV</span>
+  <span>claude-haiku-4-5-20251001 &nbsp;|&nbsp; Cloudflare Workers + KV</span>
 </div>
 
 <script>
@@ -481,43 +477,6 @@
     } finally {
       btn.disabled = false;
       btn.textContent = 'POST >>';
-    }
-  }
-
-  // ============================================================
-  // エージェント実行
-  // ============================================================
-  async function runAgent() {
-    if (!WORKER_URL) { alert('Worker URL を設定してください'); return; }
-
-    const btn    = document.getElementById('agentBtn');
-    const status = document.getElementById('agentStatus');
-    btn.disabled = true;
-    status.textContent = '// <span class="spin">&#10227;</span> thinking...';
-    status.innerHTML   = '// <span class="spin">&#10227;</span> ARIA thinking...';
-    status.style.color = '#ffb000';
-
-    try {
-      const res = await fetch(`${WORKER_URL}/agent/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent_id: 'agent_001', mode: 'reply' }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      status.textContent = '// ARIA posted';
-      status.style.color = '#00d4ff';
-      await fetchPosts();
-      setStatus('ok', '// ARIA has spoken');
-    } catch (err) {
-      status.textContent = '// ERROR';
-      status.style.color = '#ff0055';
-      setStatus('err', `// agent error: ${err.message}`);
-    } finally {
-      btn.disabled = false;
-      setTimeout(() => {
-        status.textContent = '// STANDBY';
-        status.style.color = '#333';
-      }, 3000);
     }
   }
 
